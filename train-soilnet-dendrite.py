@@ -2,7 +2,7 @@
 # SoilNet/train-soilnet-dendrite.py
 #
 # MobileNetV2 + PerforatedAI dendrites for WoodScape Soiling (4 classes).
-# Uses the perforatedai *pbTracker* API exposed via:
+# Uses the perforatedai *pai_tracker* API exposed via:
 #   from perforatedai import globals_perforatedai as PBG
 #   from perforatedai import utils_perforatedai   as PBU
 #
@@ -21,8 +21,6 @@
 #   Put your RSA license file in the *current working directory*. If your license
 #   requires env vars, set them before running:
 #       export PAIPASSWORD="your_password"
-#   or
-#       export PAIEMAIL="you@domain.com"; export PAITOKEN="xxxxxxxx"
 
 import argparse, csv, os
 from pathlib import Path
@@ -196,8 +194,28 @@ def main():
     model = model.to(device)
 
     # ==== PerforatedAI dendrites ====
+    # Allow dendrites on Conv2d + Linear; skip prompt; disable capacity test
+    if hasattr(PBG, "pc") and hasattr(PBG.pc, "set_module_types_to_convert"):
+        PBG.pc.set_module_types_to_convert([nn.Linear, nn.Conv2d])
+        if hasattr(PBG.pc, "set_module_types_to_track"):
+            PBG.pc.set_module_types_to_track([nn.Linear, nn.Conv2d])
+
+    if hasattr(PBG, "pc") and hasattr(PBG.pc, "set_module_names_to_convert"):
+        PBG.pc.set_module_names_to_convert(["Linear", "Conv2d"])
+        if hasattr(PBG.pc, "set_module_names_to_track"):
+            PBG.pc.set_module_names_to_track(["Linear", "Conv2d"])
+
+    conv2d_names = [name for name, m in model.named_modules() if isinstance(m, nn.Conv2d)]
+    if hasattr(PBG, "pc") and hasattr(PBG.pc, "set_specific_modules_to_convert"):
+        PBG.pc.set_specific_modules_to_convert(conv2d_names)
+
+    if hasattr(PBG, "pc") and hasattr(PBG.pc, "set_unwrapped_modules_confirmed"):
+        PBG.pc.set_unwrapped_modules_confirmed(True)
+
+    if hasattr(PBG, "pc") and hasattr(PBG.pc, "set_testing_dendrite_capacity"):
+        PBG.pc.set_testing_dendrite_capacity(False)
+
     # Wrap the model so the tracker can add dendrites
-    # (function name in your build is initializePB; if it ever differs, try initialize_pai)
     model = PBU.initialize_pai(model)
     model = model.to(device)
 
@@ -212,7 +230,9 @@ def main():
     criterion = nn.CrossEntropyLoss()
 
     # ---- logging ----
-    log_path = Path(args.out_dir) / "metrics_log.csv"
+    out_dir = Path(args.out_dir)
+    log_path = out_dir / "metrics_log.csv"
+    best_full_path = out_dir / "best_model_full.pt"  # FULL OBJECT (Option B)
     with open(log_path, "w", newline="") as f:
         csv.writer(f).writerow([
             "epoch",
@@ -261,20 +281,13 @@ def main():
         val_acc, val_prec, val_rec, val_f1 = epoch_metrics(y_true_v, y_pred_v)
 
         # ---- PerforatedAI decision point ----
-        # Send your key validation metric; tracker may restructure (add dendrites)
         val_score_pct = 100.0 * val_f1
         model, restructured, trainingComplete = PBG.pai_tracker.add_validation_score(val_score_pct, model)
         model = model.to(device)
 
         if restructured:
-            # Graph changed → rebuild optimizer/scheduler on new parameter set
             optimizer, scheduler = PBG.pai_tracker.setup_optimizer(model, optimArgs, schedArgs)
             print(f"[PAI] Model restructured at epoch {epoch}. Rebuilt optimizer/scheduler.")
-
-        # optional early-stop if tracker decides capacity is saturated
-        # if trainingComplete:
-        #     print("[PAI] Tracker marked training complete.")
-        #     break
 
         # ---- log & print ----
         with open(log_path, "a", newline="") as f:
@@ -292,32 +305,30 @@ def main():
               f"Train L {train_loss:.4f} A {train_acc:.3f} F1 {train_f1:.3f}  |  "
               f"Val L {val_loss:.4f} A {val_acc:.3f} F1 {val_f1:.3f}")
 
-        # Save best by val F1
+        # Save best by val F1 — FULL OBJECT (Option B)
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
-            torch.save(model.state_dict(), str(Path(args.out_dir) / "best_mobilenetv2_dendrite.pth"))
+            # save the whole wrapped model object to preserve dendrite structure
+            torch.save(model, best_full_path)
 
         # CosineAnnealingLR: step once per epoch
         if scheduler is not None:
             scheduler.step()
 
     # ---- curves ----
-    epochs = list(range(1, len(tr_losses) + 1))
-    plot_curve(epochs, tr_losses, "Train Loss", "Loss", Path(args.out_dir) / "train_loss.png")
-    plot_curve(epochs, vl_losses, "Val Loss", "Loss", Path(args.out_dir) / "val_loss.png")
-    plot_curve(epochs, tr_accs, "Accuracy (Train)", "Accuracy", Path(args.out_dir) / "train_acc.png")
-    plot_curve(epochs, vl_accs, "Accuracy (Val)", "Accuracy", Path(args.out_dir) / "val_acc.png")
-    plot_curve(epochs, tr_f1s, "F1 (Train)", "F1", Path(args.out_dir) / "train_f1.png")
-    plot_curve(epochs, vl_f1s, "F1 (Val)", "F1", Path(args.out_dir) / "val_f1.png")
+    epochs_axis = list(range(1, len(tr_losses) + 1))
+    plot_curve(epochs_axis, tr_losses, "Train Loss", "Loss", out_dir / "train_loss.png")
+    plot_curve(epochs_axis, vl_losses, "Val Loss", "Loss", out_dir / "val_loss.png")
+    plot_curve(epochs_axis, tr_accs, "Accuracy (Train)", "Accuracy", out_dir / "train_acc.png")
+    plot_curve(epochs_axis, vl_accs, "Accuracy (Val)", "Accuracy", out_dir / "val_acc.png")
+    plot_curve(epochs_axis, tr_f1s, "F1 (Train)", "F1", out_dir / "train_f1.png")
+    plot_curve(epochs_axis, vl_f1s, "F1 (Val)", "F1", out_dir / "val_f1.png")
 
-    # ---- final test (using best weights) ----
-    best_path = Path(args.out_dir) / "best_mobilenetv2_dendrite.pth"
-    if best_path.exists():
-        model.load_state_dict(torch.load(best_path, map_location=device))
-    model.eval()
+    # ---- final test (load FULL OBJECT; do NOT re-wrap) ----
+    if best_full_path.exists():
+        model = torch.load(best_full_path, map_location=device)
+    model = model.to(device).eval()
 
-    dl_test = DataLoader(ds_test, batch_size=args.batch_size, shuffle=False,
-                         num_workers=args.num_workers, pin_memory=True)
     y_true, y_pred = [], []
     with torch.no_grad():
         for xb, yb in dl_test:
@@ -327,13 +338,13 @@ def main():
             y_true.extend(yb.numpy())
 
     test_acc, test_prec, test_rec, test_f1 = epoch_metrics(y_true, y_pred)
-    with open(Path(args.out_dir) / "test_metrics.txt", "w") as f:
+    with open(out_dir / "test_metrics.txt", "w") as f:
         f.write(f"Test Accuracy:  {test_acc:.4f}\n")
         f.write(f"Test Precision: {test_prec:.4f}\n")
         f.write(f"Test Recall:    {test_rec:.4f}\n")
         f.write(f"Test F1:        {test_f1:.4f}\n")
     print(f"[TEST] Acc {test_acc:.3f} | Prec {test_prec:.3f} | Rec {test_rec:.3f} | F1 {test_f1:.3f}")
-    print(f"Artifacts saved to: {args.out_dir}")
+    print(f"Artifacts saved to: {out_dir}")
 
 
 if __name__ == "__main__":
