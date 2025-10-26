@@ -76,7 +76,7 @@ python SoilNet/train-soilnet.py   --train_csv soiling_dataset/soiling_labels_4cl
 
 ### Dendritic version (PerforatedAI)
 ```bash
-python SoilNet/train-soilnet-dendrite.py   --train_csv soiling_dataset/soiling_labels_4class_train.csv   --test_csv  soiling_dataset/soiling_labels_4class_test.csv   --out_dir   runs/mobilenetv2_dendrite   --epochs 20 --batch_size 64 --lr 1e-4 --wd 1e-4   --img_size 224 --val_ratio 0.15 --num_workers 4 --seed 42
+python SoilNet/train-soilnet-dendrite.py --train_csv soiling_dataset/soiling_labels_4class_train.csv --test_csv soiling_dataset/soiling_labels_4class_test.csv --out_dir runs/mobilenetv2_soiling --epochs 60 --batch_size 64
 ```
 
 If prompted with messages like:
