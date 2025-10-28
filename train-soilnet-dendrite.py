@@ -43,8 +43,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # ==== PerforatedAI (matches your installed modules) ====
-from perforatedai import globals_perforatedai as PBG
-from perforatedai import utils_perforatedai   as PBU
+from perforatedai import globals_perforatedai as GPA
+from perforatedai import utils_perforatedai   as UPA
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 
@@ -124,119 +124,6 @@ def plot_curve(xs, ys, title, ylabel, out_path):
     plt.close()
 
 
-def allowlist_weight_decay():
-    """Avoid interactive pdb prompt about weight decay."""
-    pc = getattr(PBG, "pc", None)
-    if pc is not None and hasattr(pc, "set_weight_decay_accepted"):
-        try:
-            pc.set_weight_decay_accepted(True)
-        except Exception:
-            pass
-
-
-def eager_wrap_dendrites(model: nn.Module) -> nn.Module:
-    """
-    Eagerly convert allowed layers to dendritic versions right now.
-    We 1) turn PAI on, 2) set an immediate switch mode, 3) allow-list
-    Conv2d + Linear, 4) explicitly enumerate Conv2d module names,
-    then 5) initialize + convert.
-    Also dumps a short audit of what got wrapped.
-    """
-    pc = getattr(PBG, "pc", None)
-    if pc is not None:
-        # --- 0) Turn PAI on & select an immediate switch mode (if available) ---
-        for setter, val in [
-            ("set_doing_pai", True),                                   # enable PAI globally
-            ("set_allow_restructures", True),                          # allow structural changes
-            ("set_unwrapped_modules_confirmed", True),                 # skip prompts
-            ("set_testing_dendrite_capacity", False),                  # skip capacity tests
-            ("set_weight_decay_accepted", True),                       # skip WD prompt
-        ]:
-            fn = getattr(pc, setter, None)
-            if callable(fn):
-                try: fn(val)
-                except Exception: pass
-
-        # Try to force “convert now” if API exposes it
-        set_switch = getattr(pc, "set_switch_mode", None)
-        SwitchMode = getattr(PBG, "SwitchMode", None)
-        if callable(set_switch) and hasattr(SwitchMode, "DOING_FIXED_NOW"):
-            try:
-                set_switch(SwitchMode.DOING_FIXED_NOW)
-                print("[PAI] switch_mode set to: DOING_FIXED_NOW")
-            except Exception:
-                pass
-
-        # --- 1) Allow-list by type and string name ---
-        for setter, payload in [
-            ("set_module_types_to_convert", [nn.Linear, nn.Conv2d]),
-            ("set_module_types_to_track",  [nn.Linear, nn.Conv2d]),
-            ("set_module_names_to_convert", ["Linear", "Conv2d"]),
-            ("set_module_names_to_track",   ["Linear", "Conv2d"]),
-        ]:
-            fn = getattr(pc, setter, None)
-            if callable(fn):
-                try: fn(payload)
-                except Exception: pass
-
-        # --- 2) Explicit list of Conv2d module names (belt & suspenders) ---
-        conv2d_names = [name for name, m in model.named_modules() if isinstance(m, nn.Conv2d)]
-        fn_specific = getattr(pc, "set_specific_modules_to_convert", None)
-        if callable(fn_specific) and conv2d_names:
-            try:
-                fn_specific(conv2d_names)
-                print(f"[PAI] Will explicitly convert {len(conv2d_names)} Conv2d modules.")
-            except Exception:
-                pass
-
-    # --- 3) Initialize then convert ---
-    model = PBU.initialize_pai(model)
-    try:
-        # Optional: show what **will** be considered
-        try:
-            will_convert = []
-            for name, m in model.named_modules():
-                if isinstance(m, (nn.Conv2d, nn.Linear)):
-                    will_convert.append(name)
-            print(f"[PAI] Eligible before convert: {len(will_convert)} (Conv2d/Linear)")
-            if len(will_convert) <= 6:
-                print("       " + ", ".join(will_convert))
-        except Exception:
-            pass
-
-        model = PBU.convert_network(model)
-
-        # --- 4) Audit what actually got wrapped ---
-        wrapped = 0
-        wrapped_names = []
-
-        # Heuristic 1: class name contains PAI hints
-        for name, m in model.named_modules():
-            cls = m.__class__.__name__.lower()
-            if any(k in cls for k in ("dendrite", "perfor", "pai")):
-                wrapped += 1
-                wrapped_names.append(name)
-
-        # Heuristic 2: modules gained PAI attrs
-        if wrapped == 0:
-            for name, m in model.named_modules():
-                if any(hasattr(m, k) for k in ("tracker_string", "pb_meta", "pai_meta")):
-                    wrapped += 1
-                    wrapped_names.append(name)
-
-        print(f"[PAI] Eager conversion complete. Dendritic modules detected: {wrapped}")
-        if 0 < wrapped <= 12:
-            print("      Wrapped examples: " + ", ".join(wrapped_names[:12]))
-        if wrapped == 0:
-            print("      (No modules appear wrapped; conversion may have been skipped by the backend.)")
-
-    except Exception as e:
-        print(f"[PAI] Eager convert failed (continuing without): {e}")
-
-    return model
-
-
-
 # ---------------------------
 # Main
 # ---------------------------
@@ -307,16 +194,19 @@ def main():
     model = model.to(device)
 
     # ==== PerforatedAI: allow weight decay & add dendrites eagerly ====
-    allowlist_weight_decay()
-    model = eager_wrap_dendrites(model)
+    GPA.pc.set_weight_decay_accepted(True)
+    GPA.pc.set_testing_dendrite_capacity(False)
+    GPA.pc.set_initial_correlation_batches(30)
+    GPA.pc.append_module_names_to_convert(['Conv2dNormActivation', 'InvertedResidual'])
+    model = UPA.initialize_pai(model)
     model = model.to(device)
 
     # ---- optimizer / scheduler (via PAI tracker, but we avoid pdb prompts)
-    PBG.pai_tracker.set_optimizer(torch.optim.AdamW)
-    PBG.pai_tracker.set_scheduler(CosineAnnealingLR)
+    GPA.pai_tracker.set_optimizer(torch.optim.AdamW)
+    GPA.pai_tracker.set_scheduler(CosineAnnealingLR)
     optimArgs = {'params': model.parameters(), 'lr': args.lr, 'weight_decay': args.wd}
     schedArgs = {'T_max': args.epochs}
-    optimizer, scheduler = PBG.pai_tracker.setup_optimizer(model, optimArgs, schedArgs)
+    optimizer, scheduler = GPA.pai_tracker.setup_optimizer(model, optimArgs, schedArgs)
 
     criterion = nn.CrossEntropyLoss()
 
@@ -362,14 +252,17 @@ def main():
 
     # ----------------- training loop -----------------
     print("Running Dendrite Experiment (eager-wrapped).")
-    for epoch in range(1, args.epochs + 1):
+    # Dendrites loop until training complete is True
+    epoch = -1
+    while True:
+        epoch += 1
         model.train()
         running_loss = 0.0
         y_true_tr, y_pred_tr = [], []
 
         for xb, yb in dl_train:
             xb, yb = xb.to(device), yb.to(device)
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad()
             logits = model(xb)
             loss = criterion(logits, yb)
             loss.backward()
@@ -398,11 +291,16 @@ def main():
         val_loss = running_val_loss / len(ds_val)
         val_acc, val_prec, val_rec, val_f1 = epoch_metrics(y_true_v, y_pred_v)
 
-        # (We still feed the tracker for plots/history, but switching is irrelevant now)
-        try:
-            PBG.pai_tracker.add_validation_score(100.0 * val_f1, model)
-        except Exception:
-            pass
+        model, restructured, training_complete = GPA.pai_tracker.add_validation_score(100.0 * val_f1, 
+        model) # .module if its a dataParallel
+        model.to(device)
+        if(training_complete):
+            break
+        elif(restructured):
+            optimArgs = {'params': model.parameters(), 'lr': args.lr, 'weight_decay': args.wd}
+            schedArgs = {'T_max': args.epochs}
+            optimizer, scheduler = GPA.pai_tracker.setup_optimizer(model, optimArgs, schedArgs)
+
 
         # ---- log & print ----
         with open(log_path, "a", newline="") as f:
@@ -438,10 +336,7 @@ def main():
     plot_curve(epochs_axis, tr_f1s, "F1 (Train)", "F1", out_dir / "train_f1.png")
     plot_curve(epochs_axis, vl_f1s, "F1 (Val)", "F1", out_dir / "val_f1.png")
 
-    # ---- final test (load FULL OBJECT; do NOT re-wrap) ----
-    if best_full_path.exists():
-        # NOTE: we intentionally use weights_only=False to load the full dendritic object
-        model = torch.load(best_full_path, map_location=device, weights_only=False)
+    # Final model is loaded automatically when add_validation score returns training_complete
     model = model.to(device).eval()
 
     y_true, y_pred = [], []
