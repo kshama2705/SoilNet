@@ -43,8 +43,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # ==== PerforatedAI (matches your installed modules) ====
-from perforatedai import globals_perforatedai as PBG
-from perforatedai import utils_perforatedai   as PBU
+from perforatedai import globals_perforatedai as GPA
+from perforatedai import utils_perforatedai   as UPA
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 
@@ -195,15 +195,18 @@ def main():
 
     # ==== PerforatedAI: allow weight decay & add dendrites eagerly ====
     GPA.pc.set_weight_decay_accepted(True)
+    GPA.pc.set_testing_dendrite_capacity(False)
+    GPA.pc.set_initial_correlation_batches(30)
+    GPA.pc.append_module_names_to_convert(['Conv2dNormActivation', 'InvertedResidual'])
     model = UPA.initialize_pai(model)
     model = model.to(device)
 
     # ---- optimizer / scheduler (via PAI tracker, but we avoid pdb prompts)
-    PBG.pai_tracker.set_optimizer(torch.optim.AdamW)
-    PBG.pai_tracker.set_scheduler(CosineAnnealingLR)
+    GPA.pai_tracker.set_optimizer(torch.optim.AdamW)
+    GPA.pai_tracker.set_scheduler(CosineAnnealingLR)
     optimArgs = {'params': model.parameters(), 'lr': args.lr, 'weight_decay': args.wd}
     schedArgs = {'T_max': args.epochs}
-    optimizer, scheduler = PBG.pai_tracker.setup_optimizer(model, optimArgs, schedArgs)
+    optimizer, scheduler = GPA.pai_tracker.setup_optimizer(model, optimArgs, schedArgs)
 
     criterion = nn.CrossEntropyLoss()
 
@@ -259,7 +262,7 @@ def main():
 
         for xb, yb in dl_train:
             xb, yb = xb.to(device), yb.to(device)
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad()
             logits = model(xb)
             loss = criterion(logits, yb)
             loss.backward()
@@ -296,7 +299,7 @@ def main():
         elif(restructured):
             optimArgs = {'params': model.parameters(), 'lr': args.lr, 'weight_decay': args.wd}
             schedArgs = {'T_max': args.epochs}
-            optimizer, scheduler = PBG.pai_tracker.setup_optimizer(model, optimArgs, schedArgs)
+            optimizer, scheduler = GPA.pai_tracker.setup_optimizer(model, optimArgs, schedArgs)
 
 
         # ---- log & print ----
