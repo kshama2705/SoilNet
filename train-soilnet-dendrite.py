@@ -196,8 +196,7 @@ def main():
     # ==== PerforatedAI: allow weight decay & add dendrites eagerly ====
     GPA.pc.set_weight_decay_accepted(True)
     GPA.pc.set_testing_dendrite_capacity(False)
-    GPA.pc.set_initial_correlation_batches(30)
-    GPA.pc.append_module_names_to_convert(['Conv2dNormActivation', 'InvertedResidual'])
+    GPA.pc.append_module_names_to_convert(['InvertedResidual'])
     model = UPA.initialize_pai(model)
     model = model.to(device)
 
